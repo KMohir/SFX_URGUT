@@ -40,6 +40,14 @@ class Form(StatesGroup):
     comment = State()   # Комментарий
     object = State()    # Объект
 
+# Состояния для запроса категории
+class CategoryRequest(StatesGroup):
+    name = State()      # Название категории
+
+# Состояния для запроса объекта
+class ObjectRequest(StatesGroup):
+    name = State()      # Название объекта
+
 # Кнопки выбора Kirim/Chiqim
 start_kb = InlineKeyboardMarkup(row_width=2)
 start_kb.add(
@@ -184,11 +192,22 @@ def init_db():
         id SERIAL PRIMARY KEY,
         name TEXT UNIQUE
     )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS objects (
+        id SERIAL PRIMARY KEY,
+        name TEXT UNIQUE
+    )''')
+    
     # Заполняем дефолтные значения, если таблицы пусты
     c.execute('SELECT COUNT(*) FROM categories')
     if c.fetchone()[0] == 0:
         for name in ["🟥 Doimiy Xarajat", "🟩 Oʻzgaruvchan Xarajat", "🟪 Qarz", "⚪ Avtoprom", "🟩 Divident", "🟪 Soliq", "🟦 Ish Xaqi"]:
             c.execute('INSERT INTO categories (name) VALUES (%s)', (name,))
+    
+    c.execute('SELECT COUNT(*) FROM objects')
+    if c.fetchone()[0] == 0:
+        for name in ["🏗️ UzAvtosanoat", "🏢 Bodomzor", "🏠 Boshqa"]:
+            c.execute('INSERT INTO objects (name) VALUES (%s)', (name,))
     conn.commit()
     conn.close()
 
@@ -235,6 +254,21 @@ def get_categories():
     conn.close()
     return result
 
+def get_objects():
+    conn = get_db_conn()
+    c = conn.cursor()
+    c.execute('SELECT name FROM objects')
+    result = [row[0] for row in c.fetchall()]
+    conn.close()
+    return result
+
+def get_objects_kb():
+    kb = InlineKeyboardMarkup(row_width=2)
+    for name in get_objects():
+        cb = f"obj_{name}"
+        kb.add(InlineKeyboardButton(name, callback_data=cb))
+    return kb
+
 # --- Основные команды ---
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message, state: FSMContext):
@@ -277,7 +311,7 @@ async def process_category(call: types.CallbackQuery, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data == 'skip_comment', state=Form.comment)
 async def skip_comment_btn(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(comment='-')
-    await call.message.edit_text("<b>Объект номини киритинг:</b>")
+    await call.message.edit_text("<b>Объект номини танланг:</b>", reply_markup=get_objects_kb())
     await Form.object.set()
     await call.answer()
 
@@ -285,12 +319,25 @@ async def skip_comment_btn(call: types.CallbackQuery, state: FSMContext):
 @dp.message_handler(state=Form.comment, content_types=types.ContentTypes.TEXT)
 async def process_comment(msg: types.Message, state: FSMContext):
     await state.update_data(comment=msg.text)
-    await msg.answer("<b>Объект номини киритинг:</b>")
+    await msg.answer("<b>Объект номини танланг:</b>", reply_markup=get_objects_kb())
     await Form.object.set()
 
-# Объект
+# Объект (выбор из кнопок)
+@dp.callback_query_handler(lambda c: c.data.startswith('obj_'), state=Form.object)
+async def process_object_selection(call: types.CallbackQuery, state: FSMContext):
+    object_name = call.data[4:]  # Убираем 'obj_' из начала
+    await state.update_data(loyiha=object_name)
+    data = await state.get_data()
+    
+    # Показываем итоговую информацию для подтверждения
+    text = format_summary(data)
+    await call.message.edit_text(text, reply_markup=confirm_kb)
+    await state.set_state('confirm')
+    await call.answer()
+
+# Объект (ручной ввод - для совместимости)
 @dp.message_handler(state=Form.object, content_types=types.ContentTypes.TEXT)
-async def process_object(msg: types.Message, state: FSMContext):
+async def process_object_manual(msg: types.Message, state: FSMContext):
     await state.update_data(loyiha=msg.text)
     data = await state.get_data()
     
@@ -347,6 +394,108 @@ async def process_confirm(call: types.CallbackQuery, state: FSMContext):
     await call.message.answer(text, reply_markup=kb)
     await Form.type.set()
     await call.answer()
+
+# --- Команды для пользователей ---
+@dp.message_handler(commands=['request_category'], state='*')
+async def request_category_cmd(msg: types.Message, state: FSMContext):
+    await state.finish()
+    await msg.answer('📝 Yangi kategoriya qo\'shish so\'rovini yuboring.\n\n'
+                    'Kategoriya nomini kiriting:')
+    await CategoryRequest.name.set()
+
+@dp.message_handler(state=CategoryRequest.name, content_types=types.ContentTypes.TEXT)
+async def process_category_request_name(msg: types.Message, state: FSMContext):
+    category_name = msg.text.strip()
+    user_id = msg.from_user.id
+    user_name = msg.from_user.full_name or msg.from_user.username or f"User {user_id}"
+    
+    # Сохраняем запрос в базе данных
+    conn = get_db_conn()
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS category_requests (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        user_name TEXT,
+        category_name TEXT,
+        status TEXT DEFAULT 'pending',
+        request_date TEXT
+    )''')
+    
+    c.execute('INSERT INTO category_requests (user_id, user_name, category_name, request_date) VALUES (%s, %s, %s, %s)',
+              (user_id, user_name, category_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+    conn.commit()
+    conn.close()
+    
+    # Уведомляем админов
+    admin_message = (
+        f'🆕 Yangi kategoriya so\'rovi:\n\n'
+        f'👤 Foydalanuvchi: {user_name}\n'
+        f'📝 Kategoriya: {category_name}\n'
+        f'🆔 User ID: {user_id}'
+    )
+    
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton('✅ Qo\'shish', callback_data=f'approve_cat_{user_id}_{category_name}'),
+        InlineKeyboardButton('❌ Rad etish', callback_data=f'deny_cat_{user_id}_{category_name}')
+    )
+    
+    for admin_id in ADMINS:
+        try:
+            await bot.send_message(admin_id, admin_message, reply_markup=kb)
+        except Exception as e:
+            logging.error(f"Could not send notification to admin {user_id}: {e}")
+    
+    await msg.answer('✅ Kategoriya so\'rovingiz adminga yuborildi. Iltimos, tasdiqlashini kuting.')
+    await state.finish()
+
+# --- Команда для запроса объекта ---
+@dp.message_handler(commands=['request_object'], state='*')
+async def request_object_cmd(msg: types.Message, state: FSMContext):
+    await state.finish()
+    await msg.answer('📝 Yangi obyekt nomini kiriting:')
+    await ObjectRequest.name.set()
+
+@dp.message_handler(state=ObjectRequest.name, content_types=types.ContentTypes.TEXT)
+async def process_object_request_name(msg: types.Message, state: FSMContext):
+    object_name = msg.text.strip()
+    user_id = msg.from_user.id
+    user_name = msg.from_user.full_name or msg.from_user.username or f"User {user_id}"
+    
+    # Сразу добавляем объект в список объектов
+    conn = get_db_conn()
+    c = conn.cursor()
+    
+    try:
+        c.execute('INSERT INTO objects (name) VALUES (%s)', (object_name,))
+        conn.commit()
+        
+        await msg.answer(f'✅ Obyekt "{object_name}" muvaffaqiyatli qo\'shildi!\n\n'
+                        f'📝 Endi uni tanlashingiz mumkin.')
+        
+        # Уведомляем админов о новом объекте
+        admin_message = (
+            f'🆕 Yangi obyekt qo\'shildi:\n\n'
+            f'👤 Foydalanuvchi: {user_name}\n'
+            f'🏗️ Obyekt: {object_name}\n'
+            f'🆔 User ID: {user_id}'
+        )
+        
+        for admin_id in ADMINS:
+            try:
+                await bot.send_message(admin_id, admin_message)
+            except Exception as e:
+                logging.error(f"Could not notify admin {admin_id}: {e}")
+                
+    except IntegrityError:
+        await msg.answer(f'❗️ Obyekt "{object_name}" allaqachon mavjud.')
+    except Exception as e:
+        await msg.answer(f'❌ Xatolik yuz berdi: {str(e)}')
+        logging.error(f"Error adding object: {e}")
+    finally:
+        conn.close()
+    
+    await state.finish()
 
 # --- Команды для админа ---
 @dp.message_handler(commands=['test_sheets'], state='*')
@@ -519,12 +668,97 @@ async def block_user_cb(call: types.CallbackQuery):
     await call.message.edit_text(f'❌ Foydalanuvchi bloklandi (ID: {user_id})')
     await call.answer()
 
+@dp.message_handler(commands=['category_requests'], state='*')
+async def category_requests_cmd(msg: types.Message, state: FSMContext):
+    if msg.from_user.id not in ADMINS:
+        await msg.answer('Faqat admin uchun!')
+        return
+    
+    await state.finish()
+    conn = get_db_conn()
+    c = conn.cursor()
+    
+    # Создаем таблицу, если её нет
+    c.execute('''CREATE TABLE IF NOT EXISTS category_requests (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        user_name TEXT,
+        category_name TEXT,
+        description TEXT,
+        status TEXT DEFAULT 'pending',
+        request_date TEXT
+    )''')
+    
+    c.execute('SELECT user_id, user_name, category_name, description, status, request_date FROM category_requests ORDER BY request_date DESC')
+    requests = c.fetchall()
+    conn.close()
+    
+    if not requests:
+        await msg.answer('📝 Kategoriya so\'rovlari mavjud emas.')
+        return
+    
+    text = '<b>📝 Kategoriya so\'rovlari:</b>\n\n'
+    for req in requests:
+        user_id, user_name, category_name, description, status, request_date = req
+        status_emoji = '⏳' if status == 'pending' else '✅' if status == 'approved' else '❌'
+        status_text = 'Kutilmoqda' if status == 'pending' else 'Tasdiqlangan' if status == 'approved' else 'Rad etilgan'
+        
+        text += f'{status_emoji} <b>{category_name}</b>\n'
+        text += f'👤 {user_name}\n'
+        text += f'📄 {description}\n'
+        text += f'📅 {request_date}\n'
+        text += f'🆔 {user_id}\n\n'
+    
+    await msg.answer(text)
+
+@dp.message_handler(commands=['object_requests'], state='*')
+async def object_requests_cmd(msg: types.Message, state: FSMContext):
+    if msg.from_user.id not in ADMINS:
+        await msg.answer('Faqat admin uchun!')
+        return
+    
+    await state.finish()
+    conn = get_db_conn()
+    c = conn.cursor()
+    
+    # Создаем таблицу, если её нет
+    c.execute('''CREATE TABLE IF NOT EXISTS object_requests (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        user_name TEXT,
+        object_name TEXT,
+        status TEXT DEFAULT 'pending',
+        request_date TEXT
+    )''')
+    
+    c.execute('SELECT user_id, user_name, object_name, status, request_date FROM object_requests ORDER BY request_date DESC')
+    requests = c.fetchall()
+    conn.close()
+    
+    if not requests:
+        await msg.answer('📝 Obyekt so\'rovlari mavjud emas.')
+        return
+    
+    text = '<b>📝 Obyekt so\'rovlari:</b>\n\n'
+    for req in requests:
+        user_id, user_name, object_name, status, request_date = req
+        status_emoji = '⏳' if status == 'pending' else '✅' if status == 'approved' else '❌'
+        status_text = 'Kutilmoqda' if status == 'pending' else 'Tasdiqlangan' if status == 'approved' else 'Rad etilgan'
+        
+        text += f'{status_emoji} <b>{object_name}</b>\n'
+        text += f'👤 {user_name}\n'
+        text += f'📅 {request_date}\n'
+        text += f'🆔 {user_id}\n\n'
+    
+    await msg.answer(text)
+
 @dp.message_handler(commands=['approve_user'], state='*')
 async def approve_user_cmd(msg: types.Message, state: FSMContext):
     if msg.from_user.id not in ADMINS:
         await msg.answer('Faqat admin uchun!')
         return
-    await state.finish()  # Сброс состояния
+    
+    await state.finish()
     conn = get_db_conn()
     c = conn.cursor()
     c.execute('SELECT user_id, name, status FROM users WHERE status = \'pending\' ORDER BY reg_date DESC')
@@ -535,21 +769,16 @@ async def approve_user_cmd(msg: types.Message, state: FSMContext):
         await msg.answer('Tasdiqlash uchun foydalanuvchilar mavjud emas.')
         return
     
-    kb = InlineKeyboardMarkup(row_width=1)
+    kb = InlineKeyboardMarkup(row_width=2)
     for user_id, name, status in users:
-        kb.add(InlineKeyboardButton(f'⏳ {name}', callback_data=f'approveuser_{user_id}'))
+        kb.add(
+            InlineKeyboardButton(f'✅ {name}', callback_data=f'approveuser_{user_id}'),
+            InlineKeyboardButton(f'❌ {name}', callback_data=f'denyuser_{user_id}')
+        )
     
     await msg.answer('Tasdiqlash uchun foydalanuvchini tanlang:', reply_markup=kb)
 
-@dp.callback_query_handler(lambda c: c.data.startswith('approveuser_'))
-async def approve_user_cb(call: types.CallbackQuery):
-    if call.from_user.id not in ADMINS:
-        await call.answer('Faqat admin uchun!', show_alert=True)
-        return
-    user_id = int(call.data[len('approveuser_'):])
-    update_user_status(user_id, 'approved')
-    await call.message.edit_text(f'✅ Foydalanuvchi tasdiqlandi (ID: {user_id})')
-    await call.answer()
+
 
 # --- Регистрация новых пользователей ---
 class Register(StatesGroup):
@@ -584,7 +813,7 @@ async def process_register_phone(msg: types.Message, state: FSMContext):
     await state.finish()
 
 # --- Обработка одобрения/отклонения пользователей ---
-@dp.callback_query_handler(lambda c: c.data.startswith('approve_') or c.data.startswith('deny_'), state='*')
+@dp.callback_query_handler(lambda c: c.data.startswith('approveuser_') or c.data.startswith('denyuser_'), state='*')
 async def process_admin_approve(call: types.CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMINS:
         await call.answer('Faqat admin uchun!', show_alert=True)
@@ -593,7 +822,7 @@ async def process_admin_approve(call: types.CallbackQuery, state: FSMContext):
     user_id = int(call.data.split('_')[1])
     action = call.data.split('_')[0]
     
-    if action == 'approve':
+    if action == 'approveuser':
         update_user_status(user_id, 'approved')
         await call.message.edit_text(f'✅ Foydalanuvchi tasdiqlandi (ID: {user_id})')
         # Уведомляем пользователя
@@ -607,6 +836,130 @@ async def process_admin_approve(call: types.CallbackQuery, state: FSMContext):
     
     await call.answer()
 
+# --- Обработка одобрения/отклонения категорий ---
+@dp.callback_query_handler(lambda c: c.data.startswith('approve_cat_') or c.data.startswith('deny_cat_'), state='*')
+async def process_category_approval(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMINS:
+        await call.answer('Faqat admin uchun!', show_alert=True)
+        return
+    
+    data = call.data.split('_')
+    action = data[0]  # approve или deny
+    user_id = int(data[2])
+    category_name = '_'.join(data[3:])  # Объединяем оставшиеся части как название категории
+    
+    conn = get_db_conn()
+    c = conn.cursor()
+    
+    if action == 'approve':
+        # Добавляем категорию в список категорий
+        try:
+            c.execute('INSERT INTO categories (name) VALUES (%s)', (category_name,))
+            conn.commit()
+            
+            # Обновляем статус запроса
+            c.execute('UPDATE category_requests SET status=%s WHERE user_id=%s AND category_name=%s', 
+                     ('approved', user_id, category_name))
+            conn.commit()
+            
+            await call.message.edit_text(f'✅ Kategoriya "{category_name}" qo\'shildi va foydalanuvchiga xabar yuborildi.')
+            
+            # Уведомляем пользователя
+            try:
+                await bot.send_message(user_id, f'🎉 Sizning kategoriya so\'rovingiz tasdiqlandi!\n\n'
+                                              f'✅ Kategoriya: {category_name}\n'
+                                              f'📝 Endi uni tanlashingiz mumkin.')
+            except Exception as e:
+                logging.error(f"Could not notify user {user_id}: {e}")
+                
+        except IntegrityError:
+            await call.message.edit_text(f'❗️ Kategoriya "{category_name}" allaqachon mavjud.')
+            conn.rollback()
+        except Exception as e:
+            await call.message.edit_text(f'❌ Xatolik yuz berdi: {str(e)}')
+            conn.rollback()
+            
+    else:  # deny
+        # Обновляем статус запроса
+        c.execute('UPDATE category_requests SET status=%s WHERE user_id=%s AND category_name=%s', 
+                 ('denied', user_id, category_name))
+        conn.commit()
+        
+        await call.message.edit_text(f'❌ Kategoriya "{category_name}" rad etildi va foydalanuvchiga xabar yuborildi.')
+        
+        # Уведомляем пользователя
+        try:
+            await bot.send_message(user_id, f'❌ Sizning kategoriya so\'rovingiz rad etildi.\n\n'
+                                          f'📝 Kategoriya: {category_name}\n'
+                                          f'💡 Boshqa nom bilan qayta so\'rov yuborishingiz mumkin.')
+        except Exception as e:
+            logging.error(f"Could not notify user {user_id}: {e}")
+    
+    conn.close()
+    await call.answer()
+
+# --- Обработка одобрения/отклонения объектов ---
+@dp.callback_query_handler(lambda c: c.data.startswith('approve_obj_') or c.data.startswith('deny_obj_'), state='*')
+async def process_object_approval(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMINS:
+        await call.answer('Faqat admin uchun!', show_alert=True)
+        return
+    
+    data = call.data.split('_')
+    action = data[0]  # approve или deny
+    user_id = int(data[2])
+    object_name = '_'.join(data[3:])  # Объединяем оставшиеся части как название объекта
+    
+    conn = get_db_conn()
+    c = conn.cursor()
+    
+    if action == 'approve':
+        # Добавляем объект в список объектов
+        try:
+            c.execute('INSERT INTO objects (name) VALUES (%s)', (object_name,))
+            conn.commit()
+            
+            # Обновляем статус запроса
+            c.execute('UPDATE object_requests SET status=%s WHERE user_id=%s AND object_name=%s', 
+                     ('approved', user_id, object_name))
+            conn.commit()
+            
+            await call.message.edit_text(f'✅ Obyekt "{object_name}" qo\'shildi va foydalanuvchiga xabar yuborildi.')
+            
+            # Уведомляем пользователя
+            try:
+                await bot.send_message(user_id, f'🎉 Sizning obyekt so\'rovingiz tasdiqlandi!\n\n'
+                                              f'✅ Obyekt: {object_name}\n'
+                                              f'📝 Endi uni tanlashingiz mumkin.')
+            except Exception as e:
+                logging.error(f"Could not notify user {user_id}: {e}")
+                
+        except IntegrityError:
+            await call.message.edit_text(f'❗️ Obyekt "{object_name}" allaqachon mavjud.')
+            conn.rollback()
+        except Exception as e:
+            await call.message.edit_text(f'❌ Xatolik yuz berdi: {str(e)}')
+            conn.rollback()
+            
+    else:  # deny
+        # Обновляем статус запроса
+        c.execute('UPDATE object_requests SET status=%s WHERE user_id=%s AND object_name=%s', 
+                 ('denied', user_id, object_name))
+        conn.commit()
+        
+        await call.message.edit_text(f'❌ Obyekt "{object_name}" rad etildi va foydalanuvchiga xabar yuborildi.')
+        
+        # Уведомляем пользователя
+        try:
+            await bot.send_message(user_id, f'❌ Sizning obyekt so\'rovingiz rad etildi.\n\n'
+                                          f'📝 Obyekt: {object_name}\n'
+                                          f'💡 Boshqa nom bilan qayta so\'rov yuborishingiz mumkin.')
+        except Exception as e:
+            logging.error(f"Could not notify user {user_id}: {e}")
+    
+    conn.close()
+    await call.answer()
+
 # --- Блокировка неодобренных пользователей ---
 @dp.message_handler(lambda msg: get_user_status(msg.from_user.id) != 'approved', state='*')
 async def block_unapproved(msg: types.Message, state: FSMContext):
@@ -618,7 +971,9 @@ async def block_unapproved(msg: types.Message, state: FSMContext):
 async def set_user_commands(dp):
     await dp.bot.set_my_commands([
         types.BotCommand("start", "Boshlash"),
-        types.BotCommand("register", "Ro'yxatdan o'tish")
+        types.BotCommand("register", "Ro'yxatdan o'tish"),
+        types.BotCommand("request_category", "Yangi kategoriya so'rovini yuborish"),
+        types.BotCommand("request_object", "Yangi obyekt qo'shish")
     ])
 
 # --- Уведомления для всех пользователей ---
