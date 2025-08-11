@@ -225,10 +225,24 @@ def get_user_status(user_id):
 def register_user(user_id, name, phone):
     conn = get_db_conn()
     c = conn.cursor()
-    c.execute('INSERT INTO users (user_id, name, phone, status, reg_date) VALUES (%s, %s, %s, %s, %s)',
-              (user_id, name, phone, 'pending', datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-    conn.commit()
-    conn.close()
+    
+    # Проверяем, существует ли пользователь
+    c.execute('SELECT user_id FROM users WHERE user_id=%s', (user_id,))
+    existing_user = c.fetchone()
+    
+    if existing_user:
+        # Пользователь уже существует, обновляем информацию
+        c.execute('UPDATE users SET name=%s, phone=%s WHERE user_id=%s', (name, phone, user_id))
+        conn.commit()
+        conn.close()
+        return False  # Возвращаем False, если пользователь уже существовал
+    else:
+        # Новый пользователь, добавляем
+        c.execute('INSERT INTO users (user_id, name, phone, status, reg_date) VALUES (%s, %s, %s, %s, %s)',
+                  (user_id, name, phone, 'pending', datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        conn.close()
+        return True  # Возвращаем True, если пользователь новый
 
 def update_user_status(user_id, status):
     conn = get_db_conn()
@@ -270,8 +284,32 @@ def get_objects_kb():
     return kb
 
 # --- Основные команды ---
+@dp.message_handler(commands=['reboot'], state='*')
+async def reboot_cmd(msg: types.Message, state: FSMContext):
+    # Проверяем статус пользователя
+    user_status = get_user_status(msg.from_user.id)
+    if user_status is None:
+        await msg.answer('❌ Siz ro\'yxatdan o\'tmagansiz. Iltimos, /register buyrug\'ini ishlatib ro\'yxatdan o\'ting.')
+        return
+    elif user_status != 'approved':
+        await msg.answer('❌ Sizning ro\'yxatdan o\'tishingiz hali tasdiqlanmagan. Iltimos, kuting.')
+        return
+    
+    await state.finish()
+    await msg.answer("<b>Qaysi turdagi operatsiya?</b>", reply_markup=start_kb)
+    await Form.type.set()
+
 @dp.message_handler(commands=['start'])
 async def start(msg: types.Message, state: FSMContext):
+    # Проверяем статус пользователя
+    user_status = get_user_status(msg.from_user.id)
+    if user_status is None:
+        await msg.answer('❌ Siz ro\'yxatdan o\'tmagansiz. Iltimos, /register buyrug\'ini ishlatib ro\'yxatdan o\'ting.')
+        return
+    elif user_status != 'approved':
+        await msg.answer('❌ Sizning ro\'yxatdan o\'tishingiz hali tasdiqlanmagan. Iltimos, kuting.')
+        return
+    
     await state.finish()
     text = "<b>Qaysi turdagi operatsiya?</b>"
     kb = InlineKeyboardMarkup(row_width=2)
@@ -398,6 +436,15 @@ async def process_confirm(call: types.CallbackQuery, state: FSMContext):
 # --- Команды для пользователей ---
 @dp.message_handler(commands=['request_category'], state='*')
 async def request_category_cmd(msg: types.Message, state: FSMContext):
+    # Проверяем статус пользователя
+    user_status = get_user_status(msg.from_user.id)
+    if user_status is None:
+        await msg.answer('❌ Siz ro\'yxatdan o\'tmagansiz. Iltimos, /register buyrug\'ini ishlatib ro\'yxatdan o\'ting.')
+        return
+    elif user_status != 'approved':
+        await msg.answer('❌ Sizning ro\'yxatdan o\'tishingiz hali tasdiqlanmagan. Iltimos, kuting.')
+        return
+    
     await state.finish()
     await msg.answer('📝 Yangi kategoriya qo\'shish so\'rovini yuboring.\n\n'
                     'Kategoriya nomini kiriting:')
@@ -452,6 +499,15 @@ async def process_category_request_name(msg: types.Message, state: FSMContext):
 # --- Команда для запроса объекта ---
 @dp.message_handler(commands=['request_object'], state='*')
 async def request_object_cmd(msg: types.Message, state: FSMContext):
+    # Проверяем статус пользователя
+    user_status = get_user_status(msg.from_user.id)
+    if user_status is None:
+        await msg.answer('❌ Siz ro\'yxatdan o\'tmagansiz. Iltimos, /register buyrug\'ini ishlatib ro\'yxatdan o\'ting.')
+        return
+    elif user_status != 'approved':
+        await msg.answer('❌ Sizning ro\'yxatdan o\'tishingiz hali tasdiqlanmagan. Iltimos, kuting.')
+        return
+    
     await state.finish()
     await msg.answer('📝 Yangi obyekt nomini kiriting:')
     await ObjectRequest.name.set()
@@ -807,9 +863,39 @@ async def process_register_phone(msg: types.Message, state: FSMContext):
     name = data.get('name')
     phone = msg.contact.phone_number
     
-    register_user(msg.from_user.id, name, phone)
-    await msg.answer('✅ Ro\'yxatdan o\'tish muvaffaqiyatli! Admin tasdiqlashini kuting.', 
-                    reply_markup=types.ReplyKeyboardRemove())
+    is_new_user = register_user(msg.from_user.id, name, phone)
+    
+    if is_new_user:
+        # Новый пользователь
+        await msg.answer('✅ Ro\'yxatdan o\'tish muvaffaqiyatli! Admin tasdiqlashini kuting.', 
+                        reply_markup=types.ReplyKeyboardRemove())
+        
+        # Уведомляем админов о новом пользователе
+        admin_message = (
+            f'🆕 Yangi foydalanuvchi ro\'yxatdan o\'tdi:\n\n'
+            f'👤 Ism: {name}\n'
+            f'📱 Telefon: {phone}\n'
+            f'🆔 User ID: {msg.from_user.id}\n'
+            f'📅 Vaqt: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
+        )
+        
+        # Создаем клавиатуру с кнопками одобрения/отклонения
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            InlineKeyboardButton('✅ Tasdiqlash', callback_data=f'approveuser_{msg.from_user.id}'),
+            InlineKeyboardButton('❌ Rad etish', callback_data=f'denyuser_{msg.from_user.id}')
+        )
+        
+        for admin_id in ADMINS:
+            try:
+                await bot.send_message(admin_id, admin_message, reply_markup=kb)
+            except Exception as e:
+                logging.error(f"Could not notify admin {admin_id}: {e}")
+    else:
+        # Пользователь уже существует
+        await msg.answer('ℹ️ Siz allaqachon ro\'yxatdan o\'tgansiz. Admin tasdiqlashini kuting.', 
+                        reply_markup=types.ReplyKeyboardRemove())
+    
     await state.finish()
 
 # --- Обработка одобрения/отклонения пользователей ---
@@ -973,7 +1059,8 @@ async def set_user_commands(dp):
         types.BotCommand("start", "Boshlash"),
         types.BotCommand("register", "Ro'yxatdan o'tish"),
         types.BotCommand("request_category", "Yangi kategoriya so'rovini yuborish"),
-        types.BotCommand("request_object", "Yangi obyekt qo'shish")
+        types.BotCommand("request_object", "Yangi obyekt qo'shish"),
+        types.BotCommand("reboot", "Qaytadan boshlash")
     ])
 
 # --- Уведомления для всех пользователей ---
@@ -990,10 +1077,34 @@ async def notify_all_users(bot):
         except Exception as e:
             logging.error(f"Could not send notification to user {user[0]}: {e}")
 
+async def notify_reboot(bot):
+    """Уведомляет всех пользователей о перезагрузке бота"""
+    conn = get_db_conn()
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM users WHERE status = \'approved\'')
+    users = c.fetchall()
+    conn.close()
+    
+    message = '🔄 Bot qayta ishga tushdi!\n\nIltimos, /start ni bosing va botdan foydalanishni davom eting!'
+    
+    for user in users:
+        try:
+            await bot.send_message(user[0], message)
+        except Exception as e:
+            logging.error(f"Could not notify user {user[0]} about reboot: {e}")
+    
+    logging.info(f"Reboot notification sent to {len(users)} users")
+
 # --- Запуск бота ---
 if __name__ == '__main__':
     async def on_startup(dp):
         await set_user_commands(dp)
         logging.info('Bot started!')
+        
+        # Уведомляем всех пользователей о перезагрузке бота
+        try:
+            await notify_reboot(dp.bot)
+        except Exception as e:
+            logging.error(f"Error sending reboot notifications: {e}")
     
     executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
