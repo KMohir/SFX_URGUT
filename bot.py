@@ -169,12 +169,13 @@ ADMINS = [5657091547, 5048593195]  # Здесь можно добавить id �
 
 # --- Инициализация БД ---
 def get_db_conn():
+    print(os.getenv('POSTGRES_DB'), os.getenv('POSTGRES_USER'), os.getenv('POSTGRES_PASSWORD'), os.getenv('POSTGRES_HOST'), os.getenv('POSTGRES_PORT'))
     return psycopg2.connect(
-        dbname=env.str('POSTGRES_DB', 'kapital'),
-        user=env.str('POSTGRES_USER', 'postgres'),
-        password=env.str('POSTGRES_PASSWORD', 'postgres'),
-        host=env.str('POSTGRES_HOST', 'localhost'),
-        port=env.str('POSTGRES_PORT', '5432')
+        dbname=os.getenv('POSTGRES_DB'),
+        user=os.getenv('POSTGRES_USER'),
+        password=os.getenv('POSTGRES_PASSWORD'),
+        host=os.getenv('POSTGRES_HOST'),
+        port=os.getenv('POSTGRES_PORT')
     )
 
 def init_db():
