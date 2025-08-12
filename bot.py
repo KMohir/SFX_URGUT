@@ -178,8 +178,11 @@ def get_db_conn():
     )
 
 def init_db():
+    """Простая инициализация базы данных (для обратной совместимости)"""
     conn = get_db_conn()
     c = conn.cursor()
+    
+    # Создаем только таблицы, данные будут добавлены через миграции
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         user_id BIGINT UNIQUE,
@@ -197,40 +200,49 @@ def init_db():
         id SERIAL PRIMARY KEY,
         name TEXT UNIQUE
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS category_requests (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        user_name TEXT,
+        category_name TEXT,
+        status TEXT DEFAULT 'pending',
+        request_date TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS object_requests (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        user_name TEXT,
+        object_name TEXT,
+        status TEXT DEFAULT 'pending',
+        request_date TEXT
+    )''')
     
-    # Заполняем дефолтные значения, если таблицы пусты
-    c.execute('SELECT COUNT(*) FROM categories')
-    if c.fetchone()[0] == 0:
-        # Новые категории
-        categories = [
-            "Мижозлардан", "Аренда техника и инструменты", "Бетон тайёрлаб бериш", 
-            "Геология ва лойиха ишлари", "Геология ишлари", "Диз топливо для техники", 
-            "Дорожные расходы", "Заправка", "Коммунал и интернет", "Кунлик ишчи", 
-            "Объем усталар", "Перевод", "Ойлик ишчилар", "Олиб чикиб кетилган мусор", 
-            "Перечесления Расход", "Питание", "Прочие расходы", "Ремонт техники и запчасти", 
-            "Сотиб олинган материал", "Карз", "Сотиб олинган снос уйлар", "Валюта операция", 
-            "Хизмат (Прочие расходы)", "Хоз товары и инвентарь", "Хожи Ака", "Эхсон", "Хомийлик"
-        ]
-        for name in categories:
-            c.execute('INSERT INTO categories (name) VALUES (%s)', (name,))
+    # Создаем таблицу миграций
+    c.execute('''CREATE TABLE IF NOT EXISTS migrations (
+        id SERIAL PRIMARY KEY,
+        migration_name TEXT UNIQUE NOT NULL,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
     
-    c.execute('SELECT COUNT(*) FROM objects')
-    if c.fetchone()[0] == 0:
-        # Новые объекты
-        objects = [
-            "Сам Сити", "Ургут", "Ал Бухорий", "Ал-Бухорий Хотел", "Рубловка", "Қува ҚВП", 
-            "Макон Малл", "Карши Малл", "Воха Гавхари", "Карши Хотел", "Зарметан усто Ғафур", 
-            "Карши Малл", "Воха Гавхари", "Зарметан усто Ғафур", "Кожа завод", "Мотрид катеж", 
-            "Хишрав", "Махдуми Азам", "Сирдарё 1/10 Зухри", "Эшонгузар", "Рубловка(Хожи бобо дом)", 
-            "Ситй+Сиёб Б Й К блок", "Қўқон малл", "Жиззах мактаб", "Кушработ КВП", 
-            "Иштихон КВП", "Кэмпинг", "Бекобод КВП", "Брдомзор", "Схф Данлагер"
-        ]
-        for name in objects:
-            c.execute('INSERT INTO objects (name) VALUES (%s)', (name,))
     conn.commit()
     conn.close()
 
+def run_migrations():
+    """Запуск миграций для добавления данных"""
+    try:
+        from migrations import run_all_migrations
+        run_all_migrations()
+        logging.info("Миграции успешно выполнены")
+    except ImportError:
+        logging.warning("Файл migrations.py не найден, пропускаем миграции")
+    except Exception as e:
+        logging.error(f"Ошибка при выполнении миграций: {e}")
+
+# Инициализируем базу данных
 init_db()
+
+# Запускаем миграции для добавления данных
+run_migrations()
 
 # --- Проверка статуса пользователя ---
 def get_user_status(user_id):
