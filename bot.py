@@ -106,13 +106,13 @@ def clean_emoji(text):
 
 def add_to_google_sheet(data):
     try:
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(SHEET_ID)
+        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(SHEET_ID)
         
         # Пробуем получить лист по названию
         try:
-    worksheet = sh.worksheet(SHEET_NAME)
+            worksheet = sh.worksheet(SHEET_NAME)
         except Exception as e:
             # Если не можем найти лист, пробуем получить первый лист
             logging.error(f"Не удалось найти лист '{SHEET_NAME}': {e}")
@@ -120,8 +120,8 @@ def add_to_google_sheet(data):
             logging.info(f"Используем первый лист: {worksheet.title}")
         
         # Получаем текущее время
-    from datetime import datetime
-    now = datetime.now()
+        from datetime import datetime
+        now = datetime.now()
         
         # Формат даты DD.MM.YYYY
         date_str = now.strftime('%d.%m.%Y')
@@ -131,18 +131,19 @@ def add_to_google_sheet(data):
         chiqim = data.get('amount', '') if data.get('type') == 'Ciqim' else ''
         
         # Формируем строку для записи в таблицу
-        # A: Сана, B: Кирим, C: Чиқим, E: Котегория, F: Изох, G: Объект номи
-    row = [
+        # A: Сана, B: Кирим, C: Чиқим, D: остатка, E: Котегория, F: Изох, G: Объект номи, H: User
+        row = [
             date_str,                    # A: Сана (дата)
             kirim,                       # B: Кирим (доход)
             chiqim,                      # C: Чиқим (расход)
             '',                          # D: остатка (пустой)
             data.get('category', ''),    # E: Котегория
             data.get('comment', ''),     # F: Изох
-            data.get('loyiha', '')       # G: Объект номи
+            data.get('loyiha', ''),      # G: Объект номи
+            data.get('user_name', '')    # H: User (имя пользователя)
         ]
         
-    worksheet.append_row(row)
+        worksheet.append_row(row)
         logging.info(f"Данные успешно добавлены в Google Sheets: {row}")
         
     except Exception as e:
@@ -273,7 +274,7 @@ def register_user(user_id, name, phone):
         c.execute('INSERT INTO users (user_id, name, phone, status, reg_date) VALUES (%s, %s, %s, %s, %s)',
                   (user_id, name, phone, 'pending', datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
         conn.commit()
-    conn.close()
+        conn.close()
         return True  # Возвращаем True, если пользователь новый
 
 def update_user_status(user_id, status):
@@ -309,7 +310,7 @@ def get_objects():
     return result
 
 def get_objects_kb():
-        kb = InlineKeyboardMarkup(row_width=2)
+    kb = InlineKeyboardMarkup(row_width=2)
     for name in get_objects():
         cb = f"obj_{name}"
         kb.add(InlineKeyboardButton(name, callback_data=cb))
@@ -433,6 +434,8 @@ async def process_confirm(call: types.CallbackQuery, state: FSMContext):
         data['vaqt'] = time_str
         # Гарантируем, что user_id всегда есть
         data['user_id'] = call.from_user.id
+        # Добавляем имя пользователя для столбца User
+        data['user_name'] = get_user_name(call.from_user.id) or call.from_user.full_name
         try:
             add_to_google_sheet(data)
             await call.message.answer('✅ Данные успешно отправлены в Google Sheets!')
@@ -581,7 +584,7 @@ async def process_object_request_name(msg: types.Message, state: FSMContext):
         await msg.answer(f'❌ Xatolik yuz berdi: {str(e)}')
         logging.error(f"Error adding object: {e}")
     finally:
-    conn.close()
+        conn.close()
     
     await state.finish()
 
@@ -1006,7 +1009,20 @@ async def process_admin_approve(call: types.CallbackQuery, state: FSMContext):
     action = call.data.split('_')[0]
     
     if action == 'approveuser':
-    update_user_status(user_id, 'approved')
+        update_user_status(user_id, 'approved')
+
+# --- Обработка одобрения/отклонения пользователей ---
+@dp.callback_query_handler(lambda c: c.data.startswith('approveuser_') or c.data.startswith('denyuser_'), state='*')
+async def process_admin_approve(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMINS:
+        await call.answer('Faqat admin uchun!', show_alert=True)
+        return
+    
+    user_id = int(call.data.split('_')[1])
+    action = call.data.split('_')[0]
+    
+    if action == 'approveuser':
+        update_user_status(user_id, 'approved')
         await call.message.edit_text(f'✅ Foydalanuvchi tasdiqlandi (ID: {user_id})')
         # Уведомляем пользователя
         try:
