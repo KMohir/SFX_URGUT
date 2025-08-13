@@ -610,6 +610,71 @@ async def test_sheets_cmd(msg: types.Message, state: FSMContext):
     except Exception as e:
         await msg.answer(f'❌ Ошибка подключения к Google Sheets:\n{str(e)}')
 
+@dp.message_handler(commands=['read_d1'], state='*')
+async def read_d1_cmd(msg: types.Message, state: FSMContext):
+    """Читает данные из ячейки D1 Google Sheets и отправляет всем админам и пользователям"""
+    if msg.from_user.id not in ADMINS:
+        await msg.answer('❌ Faqat admin uchun!')
+        return
+    
+    try:
+        await state.finish()
+        await msg.answer('📖 Читаю данные из ячейки D1...')
+        
+        # Подключаемся к Google Sheets
+        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(SHEET_ID)
+        
+        # Пробуем получить лист по названию
+        try:
+            worksheet = sh.worksheet(SHEET_NAME)
+        except Exception as e:
+            # Если не можем найти лист, пробуем получить первый лист
+            worksheet = sh.get_worksheet(0)
+        
+        # Читаем данные из ячейки D1
+        d1_value = worksheet.acell('D1').value
+        
+        if not d1_value:
+            d1_value = "Пусто"
+        
+        # Формируем сообщение
+        message_text = f"📊 Данные из ячейки D1:\n\n📝 Значение: {d1_value}\n\n⏰ Время чтения: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        
+        # Отправляем админам
+        admin_count = 0
+        for admin_id in ADMINS:
+            try:
+                await bot.send_message(admin_id, f"🔔 Уведомление от админа {msg.from_user.full_name}:\n\n{message_text}")
+                admin_count += 1
+            except Exception as e:
+                logging.error(f"Не удалось отправить сообщение админу {admin_id}: {e}")
+        
+        # Отправляем всем одобренным пользователям
+        conn = get_db_conn()
+        c = conn.cursor()
+        c.execute('SELECT user_id FROM users WHERE status = %s', ('approved',))
+        approved_users = c.fetchall()
+        conn.close()
+        
+        user_count = 0
+        for user_row in approved_users:
+            user_id = user_row[0]
+            try:
+                await bot.send_message(user_id, f"📢 Сообщение от администрации:\n\n{message_text}")
+                user_count += 1
+            except Exception as e:
+                logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+        
+        # Отчет о результатах
+        await msg.answer(f"✅ Данные успешно отправлены!\n\n📊 Статистика:\n• Админам: {admin_count}/{len(ADMINS)}\n• Пользователям: {user_count}/{len(approved_users)}")
+        
+    except Exception as e:
+        error_msg = f"❌ Ошибка при чтении данных из D1: {str(e)}"
+        await msg.answer(error_msg)
+        logging.error(error_msg)
+
 @dp.message_handler(commands=['add_category'], state='*')
 async def add_category_cmd(msg: types.Message, state: FSMContext):
     if msg.from_user.id not in ADMINS:
