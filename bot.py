@@ -104,6 +104,8 @@ def clean_emoji(text):
     # Удаляет только эмодзи/спецсимволы в начале строки, остальной текст не трогает
     return re.sub(r'^[^\w\s]*', '', text).strip()
 
+
+
 def add_to_google_sheet(data):
     try:
         creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
@@ -145,6 +147,16 @@ def add_to_google_sheet(data):
         
         worksheet.append_row(row)
         logging.info(f"Данные успешно добавлены в Google Sheets: {row}")
+        
+        # Читаем данные из ячейки D1 (первая строка)
+        try:
+            d1_value = worksheet.acell('D1').value
+            if not d1_value:
+                d1_value = "0"
+        except:
+            d1_value = "0"
+        
+        return d1_value
         
     except Exception as e:
         logging.error(f"Ошибка при добавлении в Google Sheets: {e}")
@@ -437,13 +449,24 @@ async def process_confirm(call: types.CallbackQuery, state: FSMContext):
         # Добавляем имя пользователя для столбца User
         data['user_name'] = get_user_name(call.from_user.id) or call.from_user.full_name
         try:
-            add_to_google_sheet(data)
-            await call.message.answer('✅ Данные успешно отправлены в Google Sheets!')
+            # Добавляем данные в Google Sheets и получаем данные из D1
+            d1_value = add_to_google_sheet(data)
+            
+            # Уведомление для пользователя с остатком из D1
+            user_notification = (
+                f"✅ Данные успешно отправлены в Google Sheets!\n\n"
+                f"💰 <b>Остаток сум:</b> {d1_value}"
+            )
+            await call.message.answer(user_notification)
 
-            # Уведомление для админов
+            # Уведомление для админов с остатком из D1
             user_name = get_user_name(call.from_user.id) or call.from_user.full_name
             summary_text = format_summary(data)
-            admin_notification_text = f"Foydalanuvchi <b>{user_name}</b> tomonidan kiritilgan yangi ma'lumot:\n\n{summary_text}"
+            admin_notification_text = (
+                f"Foydalanuvchi <b>{user_name}</b> tomonidan kiritilgan yangi ma'lumot:\n\n"
+                f"{summary_text}\n\n"
+                f"💰 <b>Остаток сум:</b> {d1_value}"
+            )
             
             for admin_id in ADMINS:
                 try:
@@ -613,6 +636,8 @@ async def test_sheets_cmd(msg: types.Message, state: FSMContext):
     except Exception as e:
         await msg.answer(f'❌ Ошибка подключения к Google Sheets:\n{str(e)}')
 
+
+
 @dp.message_handler(commands=['read_d1'], state='*')
 async def read_d1_cmd(msg: types.Message, state: FSMContext):
     """Читает данные из ячейки D1 Google Sheets и отправляет всем админам и пользователям"""
@@ -637,13 +662,19 @@ async def read_d1_cmd(msg: types.Message, state: FSMContext):
             worksheet = sh.get_worksheet(0)
         
         # Читаем данные из ячейки D1
-        d1_value = worksheet.acell('D1').value
-        
-        if not d1_value:
-            d1_value = "Пусто"
+        try:
+            d1_value = worksheet.acell('D1').value
+            if not d1_value:
+                d1_value = "Пусто"
+        except:
+            d1_value = "Не найдено"
         
         # Формируем сообщение
-        message_text = f"📊 Данные из ячейки D1:\n\n📝 Значение: {d1_value}\n\n⏰ Время чтения: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        message_text = (
+            f"📊 Данные из Google Sheets:\n\n"
+            f"💰 <b>Остаток сум (D1):</b> {d1_value}\n\n"
+            f"⏰ Время чтения: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        )
         
         # Отправляем админам
         admin_count = 0
@@ -1213,6 +1244,81 @@ async def update_data_cmd(msg: types.Message):
     except Exception as e:
         await msg.answer(f'❌ Xatolik yuz berdi: {str(e)}')
         logging.error(f"Error updating data: {e}")
+
+@dp.message_handler(commands=['update_balances'], state='*')
+async def update_balances_cmd(msg: types.Message, state: FSMContext):
+    """Обновляет остатки в столбце D для всех записей в Google Sheets"""
+    if msg.from_user.id not in ADMINS:
+        await msg.answer('❌ Faqat admin uchun!')
+        return
+    
+    await state.finish()
+    
+    try:
+        await msg.answer('🔄 Обновляю остатки в Google Sheets...')
+        
+        # Подключаемся к Google Sheets
+        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(SHEET_ID)
+        
+        # Пробуем получить лист по названию
+        try:
+            worksheet = sh.worksheet(SHEET_NAME)
+        except Exception as e:
+            # Если не можем найти лист, пробуем получить первый лист
+            worksheet = sh.get_worksheet(0)
+        
+        # Получаем все данные
+        all_values = worksheet.get_all_values()
+        
+        if len(all_values) <= 1:  # Только заголовки или пустая таблица
+            await msg.answer('📝 Таблица пуста или содержит только заголовки.')
+            return
+        
+        # Определяем начальную строку данных
+        start_row = 1 if all_values[0][0] in ['Сана', 'Дата', 'Date'] else 0
+        
+        # Обновляем остатки для каждой строки
+        running_balance = 0
+        updated_rows = 0
+        
+        for i, row in enumerate(all_values[start_row:], start=start_row + 1):
+            if len(row) >= 3:  # Проверяем, что есть столбцы A, B, C
+                # Столбец B (Кирим) - доходы
+                kirim_str = str(row[1]).replace(',', '').replace(' ', '') if len(row) > 1 else '0'
+                # Столбец C (Чиқим) - расходы
+                chiqim_str = str(row[2]).replace(',', '').replace(' ', '') if len(row) > 2 else '0'
+                
+                try:
+                    kirim = float(kirim_str) if kirim_str and kirim_str != '' else 0
+                    chiqim = float(chiqim_str) if chiqim_str and chiqim_str != '' else 0
+                    running_balance += kirim - chiqim
+                    
+                    # Обновляем столбец D (остаток)
+                    worksheet.update_cell(i, 4, str(running_balance))
+                    updated_rows += 1
+                    
+                except ValueError:
+                    # Если не удается преобразовать в число, пропускаем
+                    continue
+        
+        # Получаем финальный остаток
+        final_balance = calculate_balance(worksheet)
+        balance_formatted = f"{final_balance:,.2f}".replace(',', ' ')
+        
+        await msg.answer(
+            f"✅ Остатки успешно обновлены!\n\n"
+            f"📊 Статистика:\n"
+            f"• Обновлено строк: {updated_rows}\n"
+            f"• Финальный остаток: {balance_formatted}\n\n"
+            f"⏰ Время обновления: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        )
+        
+    except Exception as e:
+        error_msg = f"❌ Ошибка при обновлении остатков: {str(e)}"
+        await msg.answer(error_msg)
+        logging.error(error_msg)
 
 # --- Настройка команд бота ---
 async def set_user_commands(dp):
